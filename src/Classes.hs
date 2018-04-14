@@ -9,19 +9,19 @@ import Data.Time
 
 -- type SendEvent = forall a b m. a -> m b
 -- data Events m a = Events (ContT () m a)
-type Event m a = ContT () m a
+type Event m a = m a
 type Behaviour m a = m a
 
-eventStream :: ((a -> m ()) -> m ()) -> Event m a
-eventStream eventSpawner = ContT eventSpawner
+eventStream :: (MonadIO m, MonadCont m) => ((a -> m b) -> m a) -> Event m a
+eventStream = callCC
 
-lineEvent :: Event IO String
+lineEvent :: (MonadIO m, MonadCont m) => Event m String
 lineEvent = eventStream allLines
 
-allLines :: (String -> IO ()) -> IO ()
-allLines sendEvent = forever (getLine >>= sendEvent)
+allLines :: MonadIO m => (String -> m a) -> m a
+allLines sendEvent = forever (liftIO getLine >>= sendEvent)
 
-prog :: Event IO ()
+prog :: (MonadCont m, MonadIO m) => Event m ()
 prog = do
   a <- lineEvent *> time
   liftIO $ print a
