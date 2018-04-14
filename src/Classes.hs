@@ -7,18 +7,17 @@ module Classes where
 import Control.Monad.Cont
 import Data.Time
 
--- type SendEvent = forall a b m. a -> m b
--- data Events m a = Events (ContT () m a)
+type EventGenerator m a = forall b. ((a -> m b) -> m b)
 type Event m a = ContT () m a
 type Behaviour m a = m a
 
-eventStream :: ((a -> m ()) -> m ()) -> Event m a
+eventStream :: EventGenerator m a -> Event m a
 eventStream eventSpawner = ContT eventSpawner
 
 lineEvent :: MonadIO m => Event m String
 lineEvent = eventStream allLines
 
-allLines :: MonadIO m => (String -> m ()) -> m ()
+allLines :: MonadIO m => EventGenerator m String
 allLines sendEvent = forever (liftIO getLine >>= sendEvent)
 
 prog :: MonadIO m => Event m ()
