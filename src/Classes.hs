@@ -15,13 +15,13 @@ type Behaviour m a = m a
 eventStream :: ((a -> m ()) -> m ()) -> Event m a
 eventStream eventSpawner = ContT eventSpawner
 
-lineEvent :: Event IO String
+lineEvent :: MonadIO m => Event m String
 lineEvent = eventStream allLines
 
-allLines :: (String -> IO ()) -> IO ()
-allLines sendEvent = forever (getLine >>= sendEvent)
+allLines :: MonadIO m => (String -> m ()) -> m ()
+allLines sendEvent = forever (liftIO getLine >>= sendEvent)
 
-prog :: Event IO ()
+prog :: MonadIO m => Event m ()
 prog = do
   a <- lineEvent *> time
   liftIO $ print a
