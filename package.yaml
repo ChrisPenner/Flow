@@ -25,6 +25,9 @@ dependencies:
 - mtl
 - transformers
 - time
+- reactive-banana
+- async
+- stm
 
 library:
   source-dirs: src
