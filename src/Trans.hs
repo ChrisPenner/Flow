@@ -26,7 +26,7 @@ newtype Behaviour m a =
   deriving (Functor, Applicative, Monad)
 
 data NetworkState m = NetworkState
-  { signalExit :: IO ()
+  { signalExit :: m ()
   , jobs :: [m ()]
   }
 
@@ -36,8 +36,6 @@ newtype Network m a =
 
 deriving instance MonadIO m => MonadIO (Network m)
 
--- sample :: MonadIO m => Behaviour m a -> Network m a
--- sample (Behaviour ma) = lift ma
 pair :: MonadIO m => Event a -> Behaviour m b -> Network m (Event b)
 pair evt (Behaviour samp) = mapEventM (const samp) evt
 
@@ -86,12 +84,10 @@ network = do
   let numbers = show . length <$> evt
   exit <- gets signalExit
   react evt $ \case
-    ('q':_) -> exit
-    l -> print l
+    ('q':_) -> liftIO (print "exiting") >> exit
+    l -> liftIO $ print l
   react numbers (liftIO . print)
 
--- exit :: MonadIO m => Network m ()
--- exit = gets signalExit >>= liftIO
 runSimple :: MonadIO m => NetworkState m -> Network m () -> m (NetworkState m)
 runSimple netState (Network m) = flip execStateT netState $ m
 
@@ -101,9 +97,10 @@ runNetwork toIO m = do
   let initialNetworkState =
         NetworkState {signalExit = exitIO exitVar, jobs = []}
   NetworkState {jobs = js} <- runSimple initialNetworkState $ m
-  liftIO $ runAll js
+  allJobs <- liftIO $ runAll js
   liftIO . atomically $ (readTVar exitVar >>= check)
+  liftIO $ mapM_ cancel allJobs
   where
-    exitIO :: TVar Bool -> IO ()
-    exitIO exitVar = atomically $ writeTVar exitVar True
-    runAll = mapM_ (async . toIO >=> cancel)
+    exitIO :: MonadIO m => TVar Bool -> m ()
+    exitIO exitVar = liftIO . atomically $ writeTVar exitVar True
+    runAll = mapM (async . toIO)
