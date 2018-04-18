@@ -109,13 +109,16 @@ network = do
   exit <- gets signalExit
   evt <- linesEvent
   chars <- mergeMap evt id
-  firstChar <- firstE chars
+  -- firstChar <- firstE chars
   -- timeEvents <- pair evt timeBehaviour
   -- react timeEvents print
   react evt $ \case
     ('q':_) -> liftIO (print "exiting") >> exit
-    l -> liftIO $ print l
-  react firstChar (print . (: ": was pressed"))
+    _ -> return ()
+  -- scanned <- scanM evt "" (++)
+  -- react scanned print
+    -- l -> liftIO $ print l
+  -- react firstChar (print . (: ": was pressed"))
 
 runSimple :: MonadIO m => NetworkState m -> Network m () -> m (NetworkState m)
 runSimple netState (Network m) = flip execStateT netState $ m
@@ -136,3 +139,9 @@ runNetwork toIO m = do
     runAll = mapM (async . toIO)
     handleInterrupt :: [Async ()] -> AsyncException -> IO ()
     handleInterrupt allJobs _ = mapM_ cancel allJobs
+-- persistentRun ::
+     -- MonadIO m => Event a -> (a -> (b -> m ()) -> m ()) -> Network m (Event b)
+-- persistentRun evt f = do
+  -- (freshEvt, freshTrig) <- newEvent
+  -- runJob $ f (fire freshTrig)
+  -- return freshEvt
