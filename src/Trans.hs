@@ -6,10 +6,9 @@
 
 module Trans where
 
-import Control.Applicative
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Monad.Reader
+import Control.Monad.State
 
 data Event a =
   forall b. Event (TChan b)
@@ -18,74 +17,70 @@ data Event a =
 instance Functor Event where
   fmap f (Event t g) = Event t (f . g)
 
-data Trigger a = Trigger
-  { fire :: (a -> IO ())
+data Trigger m a = Trigger
+  { fire :: (a -> m ())
   }
 
-newtype Behaviour a =
-  Behaviour (IO a)
+newtype Behaviour m a =
+  Behaviour (m a)
   deriving (Functor, Applicative, Monad)
 
-data NetworkState = NetworkState
+data NetworkState m = NetworkState
   { signalExit :: IO ()
-  , jobs :: TVar [Async ()]
+  , jobs :: [m ()]
   }
 
 newtype Network m a =
-  Network (ReaderT NetworkState m a)
-  deriving (Functor, Applicative, Monad, MonadTrans, MonadReader NetworkState)
+  Network (StateT (NetworkState m) m a)
+  deriving (Functor, Applicative, Monad, MonadState (NetworkState m))
 
 deriving instance MonadIO m => MonadIO (Network m)
 
-sample :: MonadIO m => Behaviour a -> Network m a
-sample (Behaviour ma) = liftIO ma
-
-pair :: MonadIO m => Event a -> Behaviour b -> Network m (Event b)
+-- sample :: MonadIO m => Behaviour m a -> Network m a
+-- sample (Behaviour ma) = lift ma
+pair :: MonadIO m => Event a -> Behaviour m b -> Network m (Event b)
 pair evt (Behaviour samp) = mapEventM (const samp) evt
 
-mapEventM :: MonadIO m => (a -> IO b) -> Event a -> Network m (Event b)
+mapEventM :: MonadIO m => (a -> m b) -> Event a -> Network m (Event b)
 mapEventM f evt = do
   (freshEvt, freshTrig) <- newEvent
-  react evt $ \e -> do f e >>= fire freshTrig
+  react evt $ \e -> f e >>= fire freshTrig
   return freshEvt
 
-newEvent :: MonadIO m => Network m (Event a, Trigger a)
+newEvent :: MonadIO m => Network m (Event a, Trigger m a)
 newEvent =
   liftIO . atomically $ do
     broadcastChannel <- newBroadcastTChan
     let evt = Event broadcastChannel id
-    return (evt, Trigger (atomically . writeTChan broadcastChannel))
+    return (evt, Trigger (liftIO . atomically . writeTChan broadcastChannel))
 
-eventFromTrigger :: MonadIO m => ((a -> IO ()) -> IO ()) -> Network m (Event a)
+eventFromTrigger :: MonadIO m => ((a -> m ()) -> m ()) -> Network m (Event a)
 eventFromTrigger handler = do
   (evt, trigger) <- newEvent
   runJob $ handler (fire trigger)
   return evt
 
-runJob :: MonadIO m => IO () -> Network m ()
+runJob :: MonadIO m => m () -> Network m ()
 runJob job = do
-  jobVar <- asks jobs
-  liftIO $ do
-    w <- async job
-    atomically $ modifyTVar jobVar (w :)
+  modify (\st@NetworkState {jobs = js} -> st {jobs = (job : js)})
 
-react :: MonadIO m => Event a -> (a -> IO ()) -> Network m ()
+react :: MonadIO m => Event a -> (a -> m ()) -> Network m ()
 react (Event bChan t) f = runJob handler
   where
     handler = do
       freshEventChannel <- liftIO . atomically $ dupTChan bChan
-      liftIO . forever $ do
-        a <- atomically $ readTChan freshEventChannel
+      forever $ do
+        a <- liftIO . atomically $ readTChan freshEventChannel
         f (t a)
 
 linesEvent :: MonadIO m => Network m (Event String)
 linesEvent =
   eventFromTrigger $ \trig ->
     forever $ do
-      ln <- getLine
+      ln <- liftIO getLine
       trig ln
 
-network :: MonadIO m => Network m ()
+network :: Network IO ()
 network = do
   evt <- linesEvent
   let numbers = show . length <$> evt
@@ -93,19 +88,20 @@ network = do
   react numbers (liftIO . print)
 
 exit :: MonadIO m => Network m ()
-exit = asks signalExit >>= liftIO
+exit = gets signalExit >>= liftIO
 
-runSimple :: MonadIO m => NetworkState -> Network m () -> m ()
-runSimple exitIO (Network m) = flip runReaderT exitIO $ m
+runSimple :: MonadIO m => NetworkState m -> Network m () -> m (NetworkState m)
+runSimple netState (Network m) = flip execStateT netState $ m
 
-runNetwork :: MonadIO m => Network m () -> m ()
-runNetwork m = do
-  (jobListVar, exitVar) <- liftIO $ liftA2 (,) (newTVarIO []) (newTVarIO False)
+runNetwork :: MonadIO m => (m () -> IO ()) -> Network m () -> m ()
+runNetwork toIO m = do
+  exitVar <- liftIO $ (newTVarIO False)
   let initialNetworkState =
-        NetworkState {signalExit = exitIO exitVar, jobs = jobListVar}
-  runSimple initialNetworkState $ m
+        NetworkState {signalExit = exitIO exitVar, jobs = []}
+  NetworkState {jobs = js} <- runSimple initialNetworkState $ m
   liftIO . atomically $ (readTVar exitVar >>= check)
-  liftIO $ readTVarIO jobListVar >>= mapM_ cancel
+  liftIO $ runAll js
   where
     exitIO :: TVar Bool -> IO ()
     exitIO exitVar = atomically $ writeTVar exitVar True
+    runAll = mapM_ (async . toIO >=> cancel)
