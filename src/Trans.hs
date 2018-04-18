@@ -8,7 +8,9 @@ module Trans where
 
 import Control.Concurrent.Async
 import Control.Concurrent.STM
+import Control.Exception
 import Control.Monad.State
+import Data.Time
 
 data Event a =
   forall b. Event (TChan b)
@@ -37,10 +39,10 @@ newtype Network m a =
 deriving instance MonadIO m => MonadIO (Network m)
 
 pair :: MonadIO m => Event a -> Behaviour m b -> Network m (Event b)
-pair evt (Behaviour samp) = mapEventM (const samp) evt
+pair evt (Behaviour samp) = mapEventM evt (const samp)
 
-mapEventM :: MonadIO m => (a -> m b) -> Event a -> Network m (Event b)
-mapEventM f evt = do
+mapEventM :: MonadIO m => Event a -> (a -> m b) -> Network m (Event b)
+mapEventM evt f = do
   (freshEvt, freshTrig) <- newEvent
   react evt $ \e -> f e >>= fire freshTrig
   return freshEvt
@@ -80,9 +82,12 @@ linesEvent =
 
 network :: Network IO ()
 network = do
+  exit <- gets signalExit
   evt <- linesEvent
   let numbers = show . length <$> evt
-  exit <- gets signalExit
+      timeBehaviour = Behaviour getCurrentTime
+  timeEvents <- pair evt timeBehaviour
+  react timeEvents print
   react evt $ \case
     ('q':_) -> liftIO (print "exiting") >> exit
     l -> liftIO $ print l
@@ -93,14 +98,17 @@ runSimple netState (Network m) = flip execStateT netState $ m
 
 runNetwork :: MonadIO m => (m () -> IO ()) -> Network m () -> m ()
 runNetwork toIO m = do
-  exitVar <- liftIO $ (newTVarIO False)
+  exitVar <- liftIO $ newTVarIO False
   let initialNetworkState =
         NetworkState {signalExit = exitIO exitVar, jobs = []}
   NetworkState {jobs = js} <- runSimple initialNetworkState $ m
   allJobs <- liftIO $ runAll js
-  liftIO . atomically $ (readTVar exitVar >>= check)
-  liftIO $ mapM_ cancel allJobs
+  liftIO . (`catch` handleInterrupt allJobs) $ do
+    atomically $ (readTVar exitVar >>= check)
+    mapM_ cancel allJobs
   where
     exitIO :: MonadIO m => TVar Bool -> m ()
     exitIO exitVar = liftIO . atomically $ writeTVar exitVar True
     runAll = mapM (async . toIO)
+    handleInterrupt :: [Async ()] -> AsyncException -> IO ()
+    handleInterrupt allJobs _ = mapM_ cancel allJobs
