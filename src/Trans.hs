@@ -84,12 +84,14 @@ network :: Network IO ()
 network = do
   evt <- linesEvent
   let numbers = show . length <$> evt
-  react evt print
+  exit <- gets signalExit
+  react evt $ \case
+    ('q':_) -> exit
+    l -> print l
   react numbers (liftIO . print)
 
-exit :: MonadIO m => Network m ()
-exit = gets signalExit >>= liftIO
-
+-- exit :: MonadIO m => Network m ()
+-- exit = gets signalExit >>= liftIO
 runSimple :: MonadIO m => NetworkState m -> Network m () -> m (NetworkState m)
 runSimple netState (Network m) = flip execStateT netState $ m
 
@@ -99,8 +101,8 @@ runNetwork toIO m = do
   let initialNetworkState =
         NetworkState {signalExit = exitIO exitVar, jobs = []}
   NetworkState {jobs = js} <- runSimple initialNetworkState $ m
-  liftIO . atomically $ (readTVar exitVar >>= check)
   liftIO $ runAll js
+  liftIO . atomically $ (readTVar exitVar >>= check)
   where
     exitIO :: TVar Bool -> IO ()
     exitIO exitVar = atomically $ writeTVar exitVar True
