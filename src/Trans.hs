@@ -10,7 +10,6 @@ import Control.Applicative
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Monad.Reader
-import Control.Monad.State
 
 data Event a =
   forall b. Event (TChan b)
@@ -23,6 +22,10 @@ data Trigger a = Trigger
   { fire :: (a -> IO ())
   }
 
+newtype Behaviour a =
+  Behaviour (IO a)
+  deriving (Functor, Applicative, Monad)
+
 data NetworkState = NetworkState
   { signalExit :: IO ()
   , jobs :: TVar [Async ()]
@@ -30,9 +33,21 @@ data NetworkState = NetworkState
 
 newtype Network m a =
   Network (ReaderT NetworkState m a)
-  deriving (Functor, Applicative, Monad, MonadReader NetworkState)
+  deriving (Functor, Applicative, Monad, MonadTrans, MonadReader NetworkState)
 
 deriving instance MonadIO m => MonadIO (Network m)
+
+sample :: MonadIO m => Behaviour a -> Network m a
+sample (Behaviour ma) = liftIO ma
+
+pair :: MonadIO m => Event a -> Behaviour b -> Network m (Event b)
+pair evt (Behaviour samp) = mapEventM (const samp) evt
+
+mapEventM :: MonadIO m => (a -> IO b) -> Event a -> Network m (Event b)
+mapEventM f evt = do
+  (freshEvt, freshTrig) <- newEvent
+  react evt $ \e -> do f e >>= fire freshTrig
+  return freshEvt
 
 newEvent :: MonadIO m => Network m (Event a, Trigger a)
 newEvent =
@@ -54,16 +69,14 @@ runJob job = do
     w <- async job
     atomically $ modifyTVar jobVar (w :)
 
-react :: MonadIO m => Event a -> (a -> Network IO ()) -> Network m ()
-react (Event bChan t) f = do
-  networkState <- ask
-  runJob $ handler networkState
+react :: MonadIO m => Event a -> (a -> IO ()) -> Network m ()
+react (Event bChan t) f = runJob handler
   where
-    handler networkState = do
+    handler = do
       freshEventChannel <- liftIO . atomically $ dupTChan bChan
       liftIO . forever $ do
         a <- atomically $ readTChan freshEventChannel
-        runSimple networkState $ f (t a)
+        f (t a)
 
 linesEvent :: MonadIO m => Network m (Event String)
 linesEvent =
@@ -76,9 +89,7 @@ network :: MonadIO m => Network m ()
 network = do
   evt <- linesEvent
   let numbers = show . length <$> evt
-  react evt $ \case
-    ('q':_) -> liftIO (print "exiting") >> exit
-    l -> liftIO $ print l
+  react evt print
   react numbers (liftIO . print)
 
 exit :: MonadIO m => Network m ()
