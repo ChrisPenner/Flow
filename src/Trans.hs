@@ -14,9 +14,6 @@ import Data.Foldable
 data Event m a = Event (m (m a))
   deriving Functor
 
--- instance Functor Event where
-  -- fmap f (Event m) = Event (fmap f <$> m)
-
 data Trigger m a = Trigger
   { fire :: (a -> m ())
   }
@@ -96,10 +93,12 @@ runNetwork toIO m = do
   let initialNetworkState =
         NetworkState {signalExit = exitIO exitVar, jobs = []}
   NetworkState {jobs = js} <- runSimple initialNetworkState $ m
-  asyncs <- liftIO $ runAll js
-  liftIO . atomically $ (readTVar exitVar >>= check)
-  liftIO $ traverse_ cancel asyncs
+  asyncs <- runAll js
+  waitFor exitVar
+  cancelAll asyncs
   where
+    waitFor exitVar = liftIO . atomically $ (readTVar exitVar >>= check)
     exitIO :: MonadIO m => TVar Bool -> m ()
     exitIO exitVar = liftIO . atomically $ writeTVar exitVar True
-    runAll = mapM (async . toIO)
+    runAll = liftIO . mapM (async . toIO)
+    cancelAll asyncs = liftIO $ traverse_ cancel asyncs
