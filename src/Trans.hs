@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# language ScopedTypeVariables #-}
 
 module Trans where
 
@@ -11,8 +12,9 @@ import Control.Concurrent.STM
 import Control.Monad.State
 import Data.Foldable
 
-data Event m a = Event (m (m a))
-  deriving Functor
+data Event m a = Event
+  { newGetter :: (m (m a))
+  } deriving Functor
 
 data Trigger m a = Trigger
   { fire :: (a -> m ())
@@ -45,12 +47,20 @@ pair evt (Behaviour samp) = mapEventM (const samp) evt
 mapEventM :: (MonadIO m, Show a) => (a -> m b) -> Event m a -> Event m b
 mapEventM f (Event m) = Event (fmap (>>= f) m)
 
+liftSTM :: MonadIO m => STM a -> m a
+liftSTM = liftIO . atomically
+
 newEvent :: MonadIO m => Network m (Event m a, Trigger m a)
 newEvent =
-  liftIO . atomically $ do
-    broadcastChannel <- newBroadcastTChan
-    let evt = Event (liftIO $ atomically (dupTChan broadcastChannel) >>= return . liftIO . atomically . readTChan)
-    return (evt, Trigger (liftIO . atomically . writeTChan broadcastChannel))
+  liftSTM $ do
+    broadcastChan <- newBroadcastTChan
+    return (buildEvent broadcastChan, buildTrigger broadcastChan)
+  where
+    buildTrigger chan = Trigger (liftSTM . writeTChan chan)
+    buildEvent chan = Event . liftSTM $ do
+      newChan <- (dupTChan chan)
+      return . liftSTM . readTChan $ newChan
+
 
 eventFromTrigger :: MonadIO m => ((a -> m ()) -> m ()) -> Network m (Event m a)
 eventFromTrigger handler = do
@@ -78,8 +88,8 @@ linesEvent =
 
 network :: Network IO ()
 network = do
-  evt <- linesEvent
   exit <- gets signalExit
+  evt <- linesEvent
   react evt $ \case
     ('q':_) -> exit
     l -> print l
@@ -87,7 +97,7 @@ network = do
 runSimple :: MonadIO m => NetworkState m -> Network m () -> m (NetworkState m)
 runSimple netState (Network m) = flip execStateT netState $ m
 
-runNetwork :: MonadIO m => (m () -> IO ()) -> Network m () -> m ()
+runNetwork :: forall m. MonadIO m => (m () -> IO ()) -> Network m () -> m ()
 runNetwork toIO m = do
   exitVar <- liftIO $ (newTVarIO False)
   let initialNetworkState =
@@ -97,8 +107,10 @@ runNetwork toIO m = do
   waitFor exitVar
   cancelAll asyncs
   where
-    waitFor exitVar = liftIO . atomically $ (readTVar exitVar >>= check)
+    waitFor exitVar = liftSTM $ (readTVar exitVar >>= check)
     exitIO :: MonadIO m => TVar Bool -> m ()
-    exitIO exitVar = liftIO . atomically $ writeTVar exitVar True
+    exitIO exitVar = liftSTM $ writeTVar exitVar True
+    runAll :: [m ()] -> m [Async ()]
     runAll = liftIO . mapM (async . toIO)
+    cancelAll :: [Async a] -> m ()
     cancelAll asyncs = liftIO $ traverse_ cancel asyncs
