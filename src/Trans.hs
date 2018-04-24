@@ -43,13 +43,27 @@ sample
   => Behaviour m a -> m a
 sample (Behaviour ma) = ma
 
-pair
-  :: (MonadIO m, Show a)
+stepper
+  :: (MonadIO m)
   => Event m a -> Behaviour m b -> Event m b
-pair evt (Behaviour samp) = mapEventM (const samp) evt
+stepper evt (Behaviour samp) = mapEventM (const samp) evt
+
+scanE
+  :: (MonadIO m)
+  => Event m a -> (b -> a -> b) -> b -> Event m b
+scanE (Event evt) f initial =
+  Event $
+  do getter <- evt
+     accVar <- liftSTM $ newTVar initial
+     return $
+       do acc <- liftSTM $ readTVar accVar
+          next <- getter
+          let newAcc = f acc next
+          liftSTM $ writeTVar accVar newAcc
+          return newAcc
 
 mapEventM
-  :: (MonadIO m, Show a)
+  :: (MonadIO m)
   => (a -> m b) -> Event m a -> Event m b
 mapEventM f (Event m) = Event (fmap (>>= f) m)
 
@@ -91,7 +105,7 @@ runJob job =
         })
 
 react
-  :: (Show a, MonadIO m)
+  :: (MonadIO m)
   => Event m a -> (a -> m ()) -> Network m ()
 react (Event eventM) f = do
   getter <- lift eventM
@@ -113,6 +127,7 @@ network :: Network IO ()
 network = do
   exit <- gets signalExit
   evt <- linesEvent
+  react (scanE (fmap length evt) (+) 0) print
   react evt $
     \case
       ('q':_) -> exit
