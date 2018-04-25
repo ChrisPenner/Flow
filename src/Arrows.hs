@@ -7,6 +7,7 @@ import Control.Category as C
 import Control.Concurrent.STM
 import Control.Monad.State
 import Data.Profunctor
+import Trans
 
 data EventA a b =
   EventA (StateT [STM ()] STM (a -> STM (), STM (STM b)))
@@ -51,8 +52,8 @@ instance Arrow EventA where
         writer a
         writeTChan holdChan extra
 
-scanE :: (b -> a -> b) -> b -> EventA a b
-scanE f initial =
+scanA :: (b -> a -> b) -> b -> EventA a b
+scanA f initial =
   EventA $ do
     inChan <- lift $ newBroadcastTChan
     outChan <- lift $ newBroadcastTChan
@@ -66,3 +67,9 @@ scanE f initial =
       let nextVal = f lastVal a
       writeTChan outChan nextVal
       writeTVar lastVar nextVal
+
+runEventA :: MonadIO m => EventA a b -> Network m (Trigger m a, Event m b)
+runEventA (EventA m) = do
+  ((writer, reader), js) <- liftSTM $ flip runStateT [] m
+  mapM_ (runJob <<< liftSTM) js
+  return (Trigger (fmap liftSTM writer), Event (fmap liftSTM (liftSTM reader)))
