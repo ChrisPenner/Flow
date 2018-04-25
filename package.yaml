@@ -28,6 +28,7 @@ dependencies:
 - reactive-banana
 - async
 - stm
+- profunctors
 
 library:
   source-dirs: src
